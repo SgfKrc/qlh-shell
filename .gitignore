@@ -1,0 +1,12 @@
+node_modules/
+frontend_cybergothic/node_modules/
+dist/
+frontend_cybergothic/dist/
+build/
+frontend_cybergothic/build/
+.vite/
+frontend_cybergothic/.vite/
+.venv-tui/
+*.log
+test-results/
+__pycache__/
