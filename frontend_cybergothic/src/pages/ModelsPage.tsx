@@ -121,7 +121,14 @@ export function ModelsPage() {
   }, [modelList, query]);
   const selectedRegistryModel = modelList.find((model) => model.model_id === selectedId);
   const selectedLocalAsset = assetList.find((asset) => asset.model_id === selectedId);
-  const selectedModel = selectedRegistryModel ?? (selectedLocalAsset ? localAssetModel(selectedLocalAsset) : filteredModels[0] ?? null);
+  // ★ 2026-09-19：区分「用户**明确选择**的模型」与「仅用于展示的兜底值」。
+  //   旧写法把 `filteredModels[0]` 并进同一条 `??` 链，于是当 `selectedId` 失效
+  //   （空值 / 指向已不存在的模型）时，**加载**会静默指向**列表第一项** —— 用户报障
+  //   「选择了其他模型…然后加载成 1.8B」的另一半成因（TUI 侧的同类问题已另行修复）。
+  //   `explicitSelection` 为空即表示「用户尚未真正选中」⇒ 写操作必须拒绝，而不是猜。
+  const explicitSelection = selectedRegistryModel
+    ?? (selectedLocalAsset ? localAssetModel(selectedLocalAsset) : null);
+  const selectedModel = explicitSelection ?? filteredModels[0] ?? null;
   const supportedEngines = selectedModel?.supported_engines ?? [];
   const effectiveEngine = selectedEngine === 'auto'
     ? selectedModel?.preferred_engine || available.data?.current_engine || 'auto'
@@ -363,30 +370,36 @@ export function ModelsPage() {
   useRegisterRefresh(refresh);
 
   const handleLoad = async () => {
-    if (!selectedModel || !selectedModel.is_available || busy) return;
+    // ★ 2026-09-19：写操作必须作用在**用户明确选中**的模型上，不能用展示兜底值，
+    //   否则 `selectedId` 失效时会静默加载列表第一项（用户报障的「加载成 1.8B」）。
+    if (!explicitSelection) {
+      pushToast('请先在列表中选择一个模型', 'danger');
+      return;
+    }
+    if (!explicitSelection.is_available || busy) return;
     setBusy('load');
     try {
       if (usingFixtures) {
         setRuntimeOverride({
           loaded: true,
-          model_id: selectedModel.model_id,
-          model_name: selectedModel.name,
+          model_id: explicitSelection.model_id,
+          model_name: explicitSelection.name,
           quant_type: effectiveQuant,
           engine: effectiveEngine,
         });
-        pushToast(`Fixture runtime loaded: ${selectedModel.name}`, 'info');
+        pushToast(`Fixture runtime loaded: ${explicitSelection.name}`, 'info');
       } else {
-        const result = await api.loadModel(effectiveEngine, effectiveQuant, false, selectedModel.model_id);
+        const result = await api.loadModel(effectiveEngine, effectiveQuant, false, explicitSelection.model_id);
         setRuntimeOverride({
           ...result,
           loaded: true,
-          model_id: result.model_id || selectedModel.model_id,
-          model_name: result.model_name || selectedModel.name,
+          model_id: result.model_id || explicitSelection.model_id,
+          model_name: result.model_name || explicitSelection.name,
           quant_type: result.quant_type || effectiveQuant,
           engine: result.engine || effectiveEngine,
         });
         await Promise.all([models.refresh(), available.refresh(), current.refresh()]);
-        pushToast(`Loaded ${selectedModel.name}`, 'ok');
+        pushToast(`Loaded ${explicitSelection.name}`, 'ok');
       }
     } catch (err) {
       pushToast(`Load failed: ${api.describeError(err)}`, 'danger');
