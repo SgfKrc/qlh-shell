@@ -114,6 +114,8 @@ export function ModelsPage() {
   const assetList = assets.data?.assets ?? [];
   const engineList = available.data?.available_engines ?? [];
   const runtime = runtimeOverride ?? current.data;
+  const inferenceMode = runtime?.inference_mode || 'distributed';
+  const runtimeReady = Boolean(runtime?.loaded || runtime?.pipeline_prepared);
   const filteredModels = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return modelList;
@@ -369,6 +371,24 @@ export function ModelsPage() {
   useEffect(() => { void loadGguf(); }, [loadGguf]);
   useRegisterRefresh(refresh);
 
+  const handleInferenceMode = async (mode: 'distributed' | 'local') => {
+    if (busy || mode === inferenceMode) return;
+    setBusy('mode');
+    try {
+      if (!usingFixtures) await api.setInferenceMode(mode);
+      setRuntimeOverride({ loaded: false, pipeline_prepared: false, model_id: null, inference_mode: mode });
+      if (!usingFixtures) {
+        await Promise.all([current.refresh(), role.refresh()]);
+        setRuntimeOverride(null);
+      }
+      pushToast(mode === 'local' ? '已退出集群推理，可选择整模采集本机基线' : '已卸载本地模型并重新加入集群推理', 'ok');
+    } catch (err) {
+      pushToast(`模式切换失败: ${api.describeError(err)}`, 'danger');
+    } finally {
+      setBusy('');
+    }
+  };
+
   const handleLoad = async () => {
     // ★ 2026-09-19：写操作必须作用在**用户明确选中**的模型上，不能用展示兜底值，
     //   否则 `selectedId` 失效时会静默加载列表第一项（用户报障的「加载成 1.8B」）。
@@ -386,20 +406,23 @@ export function ModelsPage() {
           model_name: explicitSelection.name,
           quant_type: effectiveQuant,
           engine: effectiveEngine,
+          inference_mode: inferenceMode,
         });
         pushToast(`Fixture runtime loaded: ${explicitSelection.name}`, 'info');
       } else {
         const result = await api.loadModel(effectiveEngine, effectiveQuant, false, explicitSelection.model_id);
         setRuntimeOverride({
           ...result,
-          loaded: true,
+          loaded: result.loaded === true,
           model_id: result.model_id || explicitSelection.model_id,
           model_name: result.model_name || explicitSelection.name,
           quant_type: result.quant_type || effectiveQuant,
           engine: result.engine || effectiveEngine,
+          inference_mode: inferenceMode,
         });
         await Promise.all([models.refresh(), available.refresh(), current.refresh()]);
-        pushToast(`Loaded ${explicitSelection.name}`, 'ok');
+        setRuntimeOverride(null);
+        pushToast(`${result.pipeline_prepared ? 'Pipeline prepared' : 'Loaded'} ${explicitSelection.name}`, 'ok');
       }
     } catch (err) {
       pushToast(`Load failed: ${api.describeError(err)}`, 'danger');
@@ -409,15 +432,15 @@ export function ModelsPage() {
   };
 
   const handleUnload = async () => {
-    if (busy || !runtime?.loaded) return;
+    if (busy || !runtimeReady) return;
     setBusy('unload');
     try {
       if (usingFixtures) {
-        setRuntimeOverride({ ...runtime, loaded: false, model_id: null, model_name: '' });
+        setRuntimeOverride({ ...runtime, loaded: false, pipeline_prepared: false, model_id: null, model_name: '' });
         pushToast('Fixture runtime unloaded', 'info');
       } else {
         const result = await api.unloadModel();
-        setRuntimeOverride({ ...result, loaded: false, model_id: null });
+        setRuntimeOverride({ ...result, loaded: false, pipeline_prepared: false, model_id: null, inference_mode: inferenceMode });
         await current.refresh();
         pushToast('Model unloaded', 'ok');
       }
@@ -565,9 +588,17 @@ export function ModelsPage() {
               </div>
               <div className="runtime-banner">
                 <div className="runtime-banner__icon"><Cpu size={25} aria-hidden="true" /></div>
-                <div><strong>{runtime?.loaded ? runtime.model_name || loadedModelId || 'Loaded model' : 'No model loaded'}</strong><span>{runtime?.loaded ? `${runtime.engine || 'auto'} / ${runtime.quant_type || 'default'}` : 'Chat and workflow execution is waiting for a model.'}</span></div>
+                <div><strong>{runtimeReady ? runtime?.model_name || loadedModelId || 'Prepared model' : 'No model loaded'}</strong><span>{runtime?.pipeline_prepared ? '分布式层段已准备，整模未加载。' : runtime?.loaded ? `${runtime.engine || 'auto'} / ${runtime.quant_type || 'default'}` : 'Chat and workflow execution is waiting for a model.'}</span></div>
               </div>
               <div className="runtime-controls">
+                <div className="control-group">
+                  <span className="control-label">推理模式</span>
+                  <div className="control-tabs" role="group" aria-label="推理模式">
+                    <button type="button" className={inferenceMode === 'distributed' ? 'is-active' : ''} disabled={busy !== ''} onClick={() => void handleInferenceMode('distributed')}>集群分布式</button>
+                    <button type="button" className={inferenceMode === 'local' ? 'is-active' : ''} disabled={busy !== ''} onClick={() => void handleInferenceMode('local')}>退出集群，使用本地推理</button>
+                  </div>
+                  <p className="model-inline-note">{inferenceMode === 'distributed' ? '按分配层段加载。需要整模基线时，请先切换到本地推理。' : '本机不接收集群推理任务。切回分布式时先卸载本地模型。'}</p>
+                </div>
                 <div className="control-group">
                   <span className="control-label">Engine</span>
                   <div className="control-tabs" role="group" aria-label="Runtime engine">
@@ -589,8 +620,8 @@ export function ModelsPage() {
               <div className="runtime-actions">
                 <CommandButton icon={Gauge} busy={busy === 'load'} disabled={!selectedModel?.is_available || busy !== ''} onClick={() => void handleLoad()}>Load selected</CommandButton>
                 <CommandButton variant="ghost" icon={Download} href={routeHref('downloads')}>Download models</CommandButton>
-                <CommandButton variant="ghost" icon={Database} busy={busy === 'prepare-pipeline'} disabled={!selectedModel || busy !== ''} onClick={() => void handlePreparePipeline()}>Prepare pipeline</CommandButton>
-                <CommandButton variant="danger" icon={Unplug} busy={busy === 'unload'} disabled={!runtime?.loaded || busy !== ''} onClick={() => void handleUnload()}>Unload runtime</CommandButton>
+                <CommandButton variant="ghost" icon={Database} busy={busy === 'prepare-pipeline'} disabled={inferenceMode !== 'distributed' || !selectedModel || busy !== ''} onClick={() => void handlePreparePipeline()}>Prepare pipeline</CommandButton>
+                <CommandButton variant="danger" icon={Unplug} busy={busy === 'unload'} disabled={!runtimeReady || busy !== ''} onClick={() => void handleUnload()}>Unload runtime</CommandButton>
               </div>
               {!selectedModel?.is_available && selectedModel ? <p className="model-inline-note"><CircleAlert size={14} />{selectedModel.unavailable_reason || 'This model has no loadable local format.'}</p> : null}
             </section>

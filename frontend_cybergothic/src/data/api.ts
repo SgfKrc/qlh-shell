@@ -819,6 +819,12 @@ export const loadModel = (
     }),
   });
 
+export const setInferenceMode = (mode: 'distributed' | 'local') =>
+  request<{ success: boolean; mode: 'distributed' | 'local'; changed: boolean }>('/models/inference-mode', {
+    method: 'PUT',
+    body: JSON.stringify({ mode }),
+  });
+
 export const unloadModel = () =>
   request<CurrentModelResponse>('/models/unload', {
     method: 'POST',

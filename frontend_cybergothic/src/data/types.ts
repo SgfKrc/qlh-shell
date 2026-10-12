@@ -942,6 +942,7 @@ export interface AvailableModelsResponse {
 
 export interface CurrentModelResponse {
   loaded: boolean;
+  inference_mode?: 'distributed' | 'local';
   pipeline_prepared?: boolean;
   quant_type?: string | null;
   model_id?: string | null;
