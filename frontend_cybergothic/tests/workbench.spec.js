@@ -6,6 +6,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { operation, masterModels } from './helpers/model_intent_api.js';
 
 const STORAGE_KEY = 'qlh_cg_split_ratio';
 
@@ -176,6 +177,13 @@ test('发送走 SSE：generation_id 合法、token 逐段渲染、指标落地',
     route.fulfill({ status: 200, contentType: 'application/json', body: '{"messages": []}' }),
   );
 
+  await page.route('**/api/models/current', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ loaded: false, inference_mode: 'distributed' }) }));
+  await page.route('**/api/models/intent/**', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path.endsWith('/catalog') ? { models: masterModels, active_model_id: 'qwen35-9b', binding: { status: 'connected', is_master: true, master_host: null, master_api_port: null, reason_code: null } } : operation('ready');
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
+  });
+
   const errors = [];
   page.on('pageerror', (err) => errors.push(String(err)));
   await page.goto('/#/workbench'); // 注意：不带 fixtures
@@ -198,8 +206,11 @@ test('发送走 SSE：generation_id 合法、token 逐段渲染、指标落地',
   // 请求体契约：generation_id 必须匹配后端的 ^gen_[A-Za-z0-9_-]{8,96}$，
   // 否则后端直接 400，整轮发不出去（曾经用连字符前缀踩过）。
   expect(body.generation_id).toMatch(/^gen_[A-Za-z0-9_-]{8,96}$/);
-  expect(body.streaming_mode, '要逐 token 返回必须用 interactive').toBe('interactive');
+  expect(body.streaming_mode, '主节点入口继续逐 token 返回').toBe('interactive');
   expect(body.message).toBe('集群能跑分布式吗');
+  expect(body.routing_preference).toBe('distributed_required');
+  expect(body.enable_thinking).toBe(false);
+  expect(body.show_thinking).toBe(false);
 
   expect(errors).toEqual([]);
 });

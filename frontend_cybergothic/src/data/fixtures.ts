@@ -28,6 +28,8 @@ import type {
   NodesLogSummaryResponse,
   ManagedUsersResponse,
   ModelsResponse,
+  ModelIntentCatalog,
+  ModelIntentOperation,
   ModelDownloadJob,
   ModelDownloadsResponse,
   ModelPresetsResponse,
@@ -613,6 +615,23 @@ export const modelsFixture: ModelsResponse = {
       expected_paths: ['models/deepseek-r1-7b'],
     },
   ],
+};
+
+export const modelIntentCatalogFixture: ModelIntentCatalog = {
+  models: modelsFixture.models.map(({ model_path, gguf_path, expected_paths, ...model }) => model),
+  active_model_id: modelsFixture.active_model_id || null,
+  binding: { status: 'connected', is_master: true, master_host: null, master_api_port: null, reason_code: null },
+};
+
+export const modelIntentOperationFixture: ModelIntentOperation = {
+  operation_id: 'supply_fixture_preview',
+  intent: { model_id: 'qwen-1_8b', engine: 'auto', quant_type: '', strategy: 'auto', timeout_seconds: 3600 },
+  status: 'ready', reason_code: null, reason: null, config_id: 'fixture-config', generation: 1,
+  loaded_ready: true, updated_at: '2026-10-13T08:00:00Z', plan: null,
+  nodes: {
+    master: { status: 'ready', bytes_received: 1024, total_bytes: 1024, reason_code: null, reason: null, layer_range: [0, 12] },
+    'worker-tablet': { status: 'ready', bytes_received: 1024, total_bytes: 1024, reason_code: null, reason: null, layer_range: [13, 23] },
+  },
 };
 
 export const modelPresetsFixture: ModelPresetsResponse = {

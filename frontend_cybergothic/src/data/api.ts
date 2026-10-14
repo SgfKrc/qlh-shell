@@ -39,6 +39,9 @@ import type {
   ModelPipelineAssignmentResponse,
   DeploymentSimulationResponse,
   ModelsResponse,
+  ModelIntentCatalog,
+  ModelIntentOperation,
+  ModelIntentPayload,
   MasterHealthResponse,
   ConversationResponse,
   MyRoleResponse,
@@ -76,6 +79,7 @@ import type {
   WorkflowRecord,
   PreparePipelineResponse,
 } from './types';
+import { parseModelIdentityJson } from './parseModelIdentityJson';
 
 const BASE = '/api';
 
@@ -174,8 +178,11 @@ function readStorage(storage: 'session' | 'local', key: string): string {
 function normalizeDetail(detail: unknown, fallback: string): string {
   if (typeof detail === 'string' && detail) return detail;
   if (detail && typeof detail === 'object') {
-    const maybe = detail as { message?: unknown };
-    if (typeof maybe.message === 'string' && maybe.message) return maybe.message;
+    const maybe = detail as { message?: unknown; reason?: unknown; code?: unknown; reason_code?: unknown };
+    const message = typeof maybe.message === 'string' ? maybe.message : typeof maybe.reason === 'string' ? maybe.reason : '';
+    const code = typeof maybe.code === 'string' ? maybe.code : typeof maybe.reason_code === 'string' ? maybe.reason_code : '';
+    if (message) return code ? `${code}: ${message}` : message;
+    if (code) return code;
     try {
       return JSON.stringify(detail);
     } catch {
@@ -251,14 +258,14 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   let data: Record<string, unknown> = {};
   if (text) {
     try {
-      data = JSON.parse(text) as Record<string, unknown>;
+      data = parseModelIdentityJson(text) as Record<string, unknown>;
     } catch {
       data = { detail: text };
     }
   }
 
   const requestId =
-    res.headers.get('X-Request-ID') || (data.request_id as string | undefined) || null;
+    res.headers.get('X-Request-ID') || (data?.request_id as string | undefined) || null;
 
   if (!res.ok) {
     throw new ApiError(normalizeDetail(data.detail, `HTTP ${res.status}`), {
@@ -738,6 +745,47 @@ export const fetchStorageHealth = (signal?: AbortSignal) =>
 
 // ---- Model and local asset workspace ----
 
+function validateIntentOperation(operation: ModelIntentOperation | null): ModelIntentOperation | null {
+  if (operation === null) return null;
+  if (!operation || typeof operation.operation_id !== 'string' || !operation.operation_id ||
+      typeof operation.intent?.model_id !== 'string' || typeof operation.loaded_ready !== 'boolean' ||
+      !['queued', 'waiting_nodes', 'inspecting', 'inventory', 'planning', 'building', 'supplying',
+        'verifying', 'preparing', 'ready', 'failed', 'cancelled', 'superseded'].includes(operation.status)) {
+    throw new Error('INTENT_CONTRACT_INVALID：选模操作响应不符合 API 契约。');
+  }
+  return operation;
+}
+
+export const fetchModelIntentCatalog = async (signal?: AbortSignal) => {
+  const catalog = await request<ModelIntentCatalog>('/models/intent/catalog', { signal });
+  if (!Array.isArray(catalog?.models) || !['connected', 'not_found', 'local'].includes(catalog.binding?.status)) {
+    throw new Error('INTENT_CONTRACT_INVALID：主节点目录响应不符合 API 契约。');
+  }
+  return catalog;
+};
+
+export const fetchCurrentModelIntent = async (signal?: AbortSignal) =>
+  validateIntentOperation(await request<ModelIntentOperation | null>('/models/intent/current', { signal }));
+
+export const submitModelIntent = async (intent: ModelIntentPayload, signal?: AbortSignal) => {
+  const operation = validateIntentOperation(await request<ModelIntentOperation>('/models/intent', { method: 'POST', body: JSON.stringify(intent), signal }));
+  if (!operation) throw new Error('INTENT_CONTRACT_INVALID：提交选模未返回 operation。');
+  return operation;
+};
+
+export const fetchModelIntent = async (operationId: string, signal?: AbortSignal) => {
+  const operation = validateIntentOperation(await request<ModelIntentOperation>(`/models/intent/${encodeURIComponent(operationId)}`, { signal }));
+  if (!operation) throw new Error('INTENT_CONTRACT_INVALID：查询选模未返回 operation。');
+  return operation;
+};
+
+export const cancelModelIntent = (operationId: string, signal?: AbortSignal) =>
+  request<unknown>(`/models/intent/${encodeURIComponent(operationId)}`, { method: 'DELETE', signal });
+
+/** The backend discovers and binds a master without changing inference mode. */
+export const connectModelIntentMaster = (signal?: AbortSignal) =>
+  request<unknown>('/models/intent/connect', { method: 'POST', body: JSON.stringify({}), signal, timeoutMs: 120_000 });
+
 export const fetchModels = (signal?: AbortSignal) =>
   request<ModelsResponse>('/models', { signal });
 
@@ -808,9 +856,10 @@ export const loadModel = (
   quantType: string,
   useCompile = false,
   modelId?: string,
+  signal?: AbortSignal,
 ) =>
   request<CurrentModelResponse>('/models/load', {
-    method: 'POST',
+    method: 'POST', signal,
     body: JSON.stringify({
       engine: engine || 'auto',
       quant_type: quantType || 'int4',
@@ -819,15 +868,15 @@ export const loadModel = (
     }),
   });
 
-export const setInferenceMode = (mode: 'distributed' | 'local') =>
+export const setInferenceMode = (mode: 'distributed' | 'local', signal?: AbortSignal) =>
   request<{ success: boolean; mode: 'distributed' | 'local'; changed: boolean }>('/models/inference-mode', {
-    method: 'PUT',
+    method: 'PUT', signal,
     body: JSON.stringify({ mode }),
   });
 
-export const unloadModel = () =>
+export const unloadModel = (signal?: AbortSignal) =>
   request<CurrentModelResponse>('/models/unload', {
-    method: 'POST',
+    method: 'POST', signal,
     body: JSON.stringify({}),
   });
 
@@ -986,7 +1035,7 @@ export async function uploadChatFile(
   }
 
   const requestId =
-    res.headers.get('X-Request-ID') || (data.request_id as string | undefined) || null;
+    res.headers.get('X-Request-ID') || (data?.request_id as string | undefined) || null;
 
   if (!res.ok) {
     throw new ApiError(normalizeDetail(data.detail, `HTTP ${res.status}`), {
@@ -1006,6 +1055,10 @@ export interface StreamChatOptions {
   /** interactive=真流式逐 token + 完成时提交会话事务，最适合聊天页。 */
   streamingMode?: 'full' | 'fast' | 'interactive';
   showThinking?: boolean;
+  /** 按用户选择的推理模式执行，分布式请求不得回落到本地。 */
+  routingPreference?: 'local_only' | 'distributed_required';
+  /** 控制模型是否启用思考生成，默认关闭。 */
+  enableThinking?: boolean;
   temperature?: number;
   maxNewTokens?: number;
   generationId?: string;
@@ -1037,6 +1090,8 @@ export async function streamChat(
     sessionId = 'default',
     streamingMode = 'interactive',
     showThinking = false,
+    routingPreference,
+    enableThinking = false,
     temperature = 0.7,
     maxNewTokens = 1024,
     generationId,
@@ -1059,6 +1114,8 @@ export async function streamChat(
         session_id: sessionId,
         streaming_mode: streamingMode,
         show_thinking: showThinking,
+        enable_thinking: enableThinking,
+        ...(routingPreference ? { routing_preference: routingPreference } : {}),
         temperature,
         max_new_tokens: maxNewTokens,
         ...(generationId ? { generation_id: generationId } : {}),
@@ -1100,7 +1157,7 @@ export async function streamChat(
     if (!line.startsWith('data: ')) return;
     let event: Record<string, unknown>;
     try {
-      event = JSON.parse(line.slice(6)) as Record<string, unknown>;
+      event = parseModelIdentityJson(line.slice(6)) as Record<string, unknown>;
     } catch {
       return; // 分块边界上的半行，丢掉即可
     }
@@ -1114,15 +1171,26 @@ export async function streamChat(
     }
   };
 
+  // fetchResponse removes its header timeout and abort bridge once headers arrive.
+  // Cancelling the body reader keeps user cancellation effective for the whole stream.
+  const onAbort = () => { void reader.cancel(signal?.reason).catch(() => undefined); };
+  signal?.addEventListener('abort', onAbort, { once: true });
   try {
+    signal?.throwIfAborted();
     for (;;) {
       const { done: streamDone, value } = await reader.read();
+      signal?.throwIfAborted();
       if (streamDone) break;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
-      for (const line of lines) handleLine(line);
+      for (const line of lines) {
+        signal?.throwIfAborted();
+        handleLine(line);
+      }
     }
+    if (buffer) handleLine(buffer);
+    signal?.throwIfAborted();
   } catch (err) {
     if (signal?.aborted) throw err;
     throw new ApiError('流式连接中断，请稍后重试。', {
@@ -1132,8 +1200,11 @@ export async function streamChat(
       kind: 'network',
       retryable: true,
     });
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
-  if (buffer) handleLine(buffer);
 
   if (done === null) {
     throw new ApiError('流式响应中断，未收到完成事件', {

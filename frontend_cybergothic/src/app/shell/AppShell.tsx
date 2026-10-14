@@ -12,6 +12,7 @@ import { useRoute } from '../routes';
 import { fetchHealth } from '../../data/api';
 import { fixturesEnabled } from '../../data/fixtures';
 import { APP_VERSION } from '../version';
+import { ModelIntentProvider } from '../../data/ModelIntentContext';
 
 export function AppShell() {
   const [route, navigate] = useRoute();
@@ -65,6 +66,7 @@ export function AppShell() {
   const Page = route.component;
 
   return (
+    <ModelIntentProvider usingFixtures={usingFixtures}>
     <div className={`shell${route.fullBleed ? ' shell--bleed' : ''}`}>
       <GrainOverlay />
       <div className="shell__diagonals" aria-hidden="true" />
@@ -133,5 +135,6 @@ export function AppShell() {
 
       <ToastHost />
     </div>
+    </ModelIntentProvider>
   );
 }

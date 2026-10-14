@@ -698,3 +698,131 @@
     flex: 1 1 130px;
   }
 }
+
+/* MODEL-INTENT-UX-01: master catalog and the shared operation projection. */
+.models-layout--intent {
+  grid-template-columns: minmax(210px, 280px) minmax(0, 1fr);
+}
+
+.intent-progress {
+  min-width: 0;
+  padding: var(--gap-md);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-sunken);
+}
+
+.intent-progress__head,
+.intent-binding {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--gap-sm);
+}
+
+.intent-progress__head h2 {
+  margin: 0 0 6px;
+  font-size: 1.15rem;
+}
+
+.intent-progress__head p,
+.intent-progress__ready {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.intent-progress__identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font: 10px var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.intent-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: var(--gap-md) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.intent-stages li {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.intent-stages li[data-state='current'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.intent-stages li[data-state='done'] {
+  color: var(--success);
+}
+
+.intent-nodes-wrap {
+  margin-top: var(--gap-sm);
+  max-height: 300px;
+  overflow: auto;
+}
+
+.intent-nodes {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 11px;
+}
+
+.intent-nodes th,
+.intent-nodes td {
+  min-width: 72px;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.intent-nodes td span,
+.intent-node-error {
+  display: block;
+  margin: 3px 0;
+}
+
+.intent-nodes progress {
+  display: block;
+  width: 100%;
+  min-width: 100px;
+  height: 6px;
+  accent-color: var(--accent);
+}
+
+.intent-node-error { color: var(--danger); }
+.intent-binding { margin-top: var(--gap-md); font-size: 12px; }
+.intent-selection { margin-top: var(--gap-md); }
+.intent-selection h3 { margin: 0 0 6px; font-size: 1.1rem; }
+.intent-selection select {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-sunken);
+  color: var(--text);
+  font: inherit;
+}
+
+.chat > .intent-progress { flex: 0 0 auto; margin: 0 var(--gap-md); }
+.intent-progress--compact { max-height: 260px; overflow: auto; padding: var(--gap-sm); }
+.intent-progress--compact .intent-progress__head h2 { font-size: 13px; }
+.intent-progress--compact .intent-nodes-wrap { max-height: 100px; }
+.intent-progress--compact .runtime-actions { margin-top: 6px; }
+
+@media (max-width: 760px) {
+  .models-layout--intent { display: flex; flex-direction: column; }
+}

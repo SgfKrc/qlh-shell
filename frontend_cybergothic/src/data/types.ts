@@ -908,6 +908,64 @@ export interface ModelSummary {
   [key: string]: unknown;
 }
 
+/** Master catalog deliberately excludes machine-local filesystem paths. */
+export interface IntentModelSummary extends ModelSummary {
+  model_path?: never;
+  gguf_path?: never;
+  expected_paths?: never;
+}
+
+export interface ModelIntentBinding {
+  status: 'connected' | 'not_found' | 'local';
+  is_master: boolean;
+  master_host: string | null;
+  master_api_port: number | null;
+  reason_code: string | null;
+}
+
+export interface ModelIntentCatalog {
+  models: IntentModelSummary[];
+  active_model_id: string | null;
+  binding: ModelIntentBinding;
+}
+
+export interface ModelIntentPayload {
+  model_id: string;
+  engine: 'auto' | 'pytorch' | 'llama_cpp';
+  quant_type: string;
+  strategy: 'auto';
+  timeout_seconds: number;
+}
+
+export type ModelIntentStatus = 'queued' | 'waiting_nodes' | 'inspecting' | 'inventory' |
+  'planning' | 'building' | 'supplying' | 'verifying' | 'preparing' | 'ready' |
+  'failed' | 'cancelled' | 'superseded';
+
+/** Unsafe wire JSON integers become exact decimal strings at the Web boundary. */
+export type ModelGeneration = number | string;
+
+export interface ModelIntentOperation {
+  operation_id: string;
+  intent: ModelIntentPayload;
+  status: ModelIntentStatus;
+  reason_code: string | null;
+  reason: string | null;
+  config_id: string | null;
+  generation: ModelGeneration;
+  loaded_ready: boolean;
+  nodes: Record<string, {
+    status: string;
+    bytes_received: number;
+    total_bytes: number;
+    reason_code: string | null;
+    reason: string | null;
+    layer_range: number[] | null;
+  }>;
+  plan: Record<string, unknown> | null;
+  updated_at: string | number;
+  binding?: ModelIntentBinding;
+}
+
 export interface ModelsResponse {
   models: ModelSummary[];
   active_model_id?: string | null;
@@ -1289,6 +1347,10 @@ export interface ChatMetrics {
   distributed_used?: boolean;
   serving_node_id?: string;
   workers_used?: string[];
+  /** done.metrics 中的模型准备 identity，与本次推理的 config_id/generation_id 区分。 */
+  model_operation_id?: string | null;
+  model_config_id?: string | null;
+  model_generation?: ModelGeneration | null;
   generation_id?: string;
   request_id?: string;
   [key: string]: unknown;

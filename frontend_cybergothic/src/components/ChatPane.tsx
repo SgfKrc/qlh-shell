@@ -18,6 +18,8 @@ import { EmptyState } from './EmptyState';
 import { pushToast } from './Toast';
 import { useReducedMotion } from '../motion/useReducedMotion';
 import { GothicWorksCanvas } from '../visual/GothicWorksCanvas';
+import { useModelIntent } from '../data/ModelIntentContext';
+import { ModelIntentProgress } from './ModelIntentProgress';
 
 /**
  * 可选扩展名 —— 与后端 ALLOWED_TEXT_EXTENSIONS 对齐（api_server.py）。
@@ -122,6 +124,17 @@ function formatMetrics(turn: ChatTurn): string {
   if (typeof mode === 'string' && mode && !(m.fallback === true && mode.startsWith('fallback'))) {
     parts.push(mode);
   }
+  // 模型准备 identity 只取本轮响应，避免当前选模变化后改写旧回答的归属。
+  if (typeof m.model_operation_id === 'string' && m.model_operation_id.trim()) {
+    parts.push(`模型准备：${m.model_operation_id}`);
+  }
+  if (typeof m.model_config_id === 'string' && m.model_config_id.trim()) {
+    parts.push(`模型配置：${m.model_config_id}`);
+  }
+  if ((typeof m.model_generation === 'number' && Number.isFinite(m.model_generation)) ||
+      (typeof m.model_generation === 'string' && /^-?(?:0|[1-9]\d*)$/.test(m.model_generation))) {
+    parts.push(`模型代次：${m.model_generation}`);
+  }
   return parts.join(' · ');
 }
 
@@ -133,6 +146,7 @@ interface ChatPaneProps {
 
 export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProps) {
   const usingFixtures = fixturesEnabled();
+  const intent = useModelIntent();
   const reduced = useReducedMotion();
 
   const [turns, setTurns] = useState<ChatTurn[]>([]);
@@ -150,6 +164,9 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
   const [openThinking, setOpenThinking] = useState<Record<string, boolean>>({});
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
+
+  // History replaces the turn list, so sends and history mutations must wait for it.
+  const historyBusy = loading || refreshing;
 
   const listRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -216,8 +233,8 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
   useEffect(() => {
     const el = listRef.current;
     if (!el || !pinnedRef.current) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: reduced ? 'auto' : 'smooth' });
-  }, [turns, reduced]);
+    el.scrollTo({ top: el.scrollHeight, behavior: sending && !reduced ? 'smooth' : 'auto' });
+  }, [turns, reduced, sending]);
 
   const onScroll = useCallback(() => {
     const el = listRef.current;
@@ -295,10 +312,15 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
 
   const send = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sending) return;
+    if (!text || sending || historyBusy) return;
 
     if (usingFixtures) {
       pushToast('演示数据模式下不发起真实推理。请在设置页关闭演示数据。', 'warn');
+      return;
+    }
+
+    if (!intent.chatReady) {
+      pushToast('模型尚未准备就绪，请等待准备完成或在模型页重试。', 'warn');
       return;
     }
 
@@ -332,7 +354,10 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
       // 发给模型的是「附件正文 + 提问」，气泡里只显示提问本身
       const result = await api.streamChat(payload, {
         sessionId,
-        streamingMode: 'interactive',
+        // A bound worker forwards the complete request through its master gateway.
+        streamingMode: intent.mode === 'distributed' && intent.catalog?.binding.is_master === false ? 'full' : 'interactive',
+        routingPreference: intent.mode === 'local' ? 'local_only' : 'distributed_required',
+        enableThinking: showThinking,
         showThinking,
         generationId,
         signal: controller.signal,
@@ -369,12 +394,16 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
   }, [
     draft,
     sending,
+    historyBusy,
     usingFixtures,
     sessionId,
     showThinking,
     patchTurn,
     onTurnComplete,
     attachments,
+    intent.chatReady,
+    intent.mode,
+    intent.catalog?.binding.is_master,
   ]);
 
   const stop = useCallback(() => {
@@ -385,6 +414,7 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
   }, []);
 
   const clear = useCallback(async () => {
+    if (sending || historyBusy) return;
     if (usingFixtures) {
       pushToast('演示数据模式下不执行清空。', 'warn');
       return;
@@ -396,7 +426,7 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
     } catch (err) {
       pushToast(`清空失败：${api.describeError(err)}`, 'danger');
     }
-  }, [usingFixtures, sessionId]);
+  }, [usingFixtures, sessionId, sending, historyBusy]);
 
   const refreshHistory = useCallback(() => {
     if (sending || loading || refreshing) return;
@@ -412,7 +442,7 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
 
   const deleteTurn = useCallback(
     async (turnIndex: number) => {
-      if (sending || deletingTurn !== null) return;
+      if (sending || historyBusy || deletingTurn !== null) return;
       setConfirmDeleteTurn(null);
       setDeletingTurn(turnIndex);
       try {
@@ -430,7 +460,7 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
         setDeletingTurn(null);
       }
     },
-    [deletingTurn, sending, sessionId, usingFixtures],
+    [deletingTurn, sending, historyBusy, sessionId, usingFixtures],
   );
 
   const onKeyDown = useCallback(
@@ -444,15 +474,17 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
     [send],
   );
 
-  const canSend = draft.trim().length > 0 && !sending;
+  const canSend = draft.trim().length > 0 && !sending && !historyBusy && (usingFixtures || intent.chatReady);
   const empty = !loading && !loadError && turns.length === 0;
 
   const composerHint = useMemo(() => {
     if (sending) return '生成中，可按停止中断';
+    if (historyBusy) return '正在读取会话历史，完成后可发送';
+    if (!usingFixtures && !intent.chatReady) return '等待模型准备就绪后发送';
     if (uploading) return '正在上传附件…';
     if (attachments.length > 0) return `已附 ${attachments.length} 个文件 · Enter 发送`;
     return 'Enter 发送 · Shift+Enter 换行 · 附件仅支持文本类文件';
-  }, [sending, uploading, attachments.length]);
+  }, [sending, historyBusy, uploading, attachments.length, usingFixtures, intent.chatReady]);
 
   return (
     <div className="chat">
@@ -479,7 +511,7 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
             size="sm"
             icon={Eraser}
             onClick={() => void clear()}
-            disabled={sending || turns.length === 0}
+            disabled={sending || historyBusy || turns.length === 0}
             ariaLabel="清空当前会话历史"
           >
             清空
@@ -497,6 +529,8 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
           </CommandButton>
         </div>
       </header>
+
+      <ModelIntentProgress compact />
 
       <div className="chat__list" ref={listRef} onScroll={onScroll}>
         {loading ? (
@@ -586,7 +620,7 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
                             type="button"
                             className="msg__action msg__action--danger"
                             onClick={() => void deleteTurn(turnIndex)}
-                            disabled={deletingTurn !== null}
+                            disabled={deletingTurn !== null || sending || historyBusy}
                           >
                             {deletingTurn === turnIndex ? '删除中…' : '确认'}
                           </button>
@@ -604,7 +638,7 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
                           type="button"
                           className="msg__delete"
                           onClick={() => setConfirmDeleteTurn(turnIndex)}
-                          disabled={deletingTurn !== null || sending}
+                          disabled={deletingTurn !== null || sending || historyBusy}
                           title="删除这一轮对话"
                           aria-label="删除这一轮对话"
                         >
@@ -661,6 +695,7 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
 
         <textarea
           id="chat-input"
+          data-testid="chat-input"
           ref={textareaRef}
           className="composer__input"
           value={draft}
@@ -700,6 +735,7 @@ export function ChatPane({ sessionId = 'default', onTurnComplete }: ChatPaneProp
             ) : null}
             <CommandButton
               type="submit"
+              testId="chat-send"
               size="sm"
               icon={sending ? Loader2 : SendHorizontal}
               disabled={!canSend}

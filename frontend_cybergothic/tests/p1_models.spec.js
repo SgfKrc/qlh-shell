@@ -2,15 +2,19 @@ import { test, expect } from '@playwright/test';
 
 test('model workspace supports runtime controls and asset preflight in fixture mode', async ({ page }) => {
   await page.goto('/#/models?fixtures=1');
+  await page.getByRole('button', { name: '退出集群，使用本地推理' }).click();
+  await page.locator('.model-list__item').filter({ hasText: 'Qwen 1.8B Chat' }).click();
 
   await expect(page.getByRole('heading', { level: 1, name: 'Model workspace' })).toBeVisible();
   await expect(page.locator('.model-list > li')).toHaveCount(3);
   await expect(page.locator('.asset-list > li')).toHaveCount(2);
-  await expect(page.locator('.runtime-banner')).toContainText('Qwen 1.8B Chat');
+  await expect(page.locator('.runtime-banner')).toContainText('No model loaded');
 
   await page.getByRole('button', { name: 'Run preflight' }).click();
   await expect(page.locator('.preflight-result')).toContainText('Gate passed');
 
+  await page.getByRole('button', { name: 'Load selected' }).click();
+  await expect(page.locator('.model-panel--runtime .badge')).toContainText('LOADED');
   await page.getByRole('button', { name: 'Unload runtime' }).click();
   await expect(page.locator('.runtime-banner')).toContainText('No model loaded');
   await page.getByRole('button', { name: 'Load selected' }).click();
@@ -20,6 +24,8 @@ test('model workspace supports runtime controls and asset preflight in fixture m
 
 test('model workspace exposes asset governance and simulation state in fixture mode', async ({ page }) => {
   await page.goto('/#/models?fixtures=1');
+  await page.getByRole('button', { name: '退出集群，使用本地推理' }).click();
+  await page.locator('.model-list__item').filter({ hasText: 'Qwen 1.8B Chat' }).click();
   const governance = page.getByTestId('model-governance');
   await expect(governance).toBeVisible();
   await expect(governance).toContainText('Download manifest');
@@ -34,6 +40,8 @@ test('model workspace exposes asset governance and simulation state in fixture m
 
 test('model workspace can register and remove a custom fixture model', async ({ page }) => {
   await page.goto('/#/models?fixtures=1');
+  await page.getByRole('button', { name: '退出集群，使用本地推理' }).click();
+  await page.locator('.model-list__item').filter({ hasText: 'Qwen 1.8B Chat' }).click();
   const registry = page.locator('.model-panel--registry');
   await registry.locator('summary').click();
   await registry.getByLabel('Model ID').fill('custom-fixture-model');

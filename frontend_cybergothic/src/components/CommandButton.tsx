@@ -16,6 +16,8 @@ interface BaseProps {
   /** 进行中：禁用点击并显示进度文案。 */
   busy?: boolean;
   className?: string;
+  /** Stable selector for product/browser acceptance. */
+  testId?: string;
 }
 
 interface ButtonProps extends BaseProps {
@@ -71,6 +73,7 @@ export function CommandButton(props: ButtonProps | LinkProps) {
     return (
       <a
         className={classes}
+        {...(props.testId ? { 'data-testid': props.testId } : {})}
         href={props.href}
         {...(props.ariaLabel ? { 'aria-label': props.ariaLabel } : {})}
         {...(isExternal ? { target: '_blank', rel: 'noreferrer noopener' } : {})}
@@ -85,6 +88,7 @@ export function CommandButton(props: ButtonProps | LinkProps) {
   return (
     <button
       className={classes}
+      {...(props.testId ? { 'data-testid': props.testId } : {})}
       type={type}
       {...(onClick ? { onClick } : {})}
       disabled={disabled || busy}

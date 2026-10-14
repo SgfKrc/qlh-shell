@@ -24,7 +24,6 @@ import * as api from '../data/api';
 import { fixturesEnabled } from '../data/fixtures';
 import {
   useAvailableModels,
-  useCurrentModel,
   useLocalModelAssets,
   useMyRole,
   useModels,
@@ -40,6 +39,8 @@ import type {
   ModelSummary,
 } from '../data/types';
 import { ModelOrbitCanvas } from '../visual/ModelOrbitCanvas';
+import { useModelIntent } from '../data/ModelIntentContext';
+import { DistributedModelsPage } from './DistributedModelsPage';
 
 function formatBytes(value: unknown): string {
   const bytes = Number(value || 0);
@@ -86,9 +87,14 @@ function localAssetModel(asset: LocalModelAsset): ModelSummary {
 }
 
 export function ModelsPage() {
+  const intent = useModelIntent();
+  return intent.mode === 'local' ? <LocalModelsWorkspace /> : <DistributedModelsPage />;
+}
+
+function LocalModelsWorkspace() {
+  const intent = useModelIntent();
   const models = useModels();
   const available = useAvailableModels();
-  const current = useCurrentModel();
   const assets = useLocalModelAssets();
   const role = useMyRole();
   const usingFixtures = fixturesEnabled();
@@ -96,9 +102,9 @@ export function ModelsPage() {
   const [selectedId, setSelectedId] = useState('');
   const [selectedEngine, setSelectedEngine] = useState('auto');
   const [selectedQuant, setSelectedQuant] = useState('');
-  const [busy, setBusy] = useState('');
+  const [localBusy, setBusy] = useState('');
+  const busy = intent.busy || localBusy;
   const [preflight, setPreflight] = useState<ModelPreflightResponse | null>(null);
-  const [runtimeOverride, setRuntimeOverride] = useState<CurrentModelResponse | null>(null);
   const [ggufModels, setGgufModels] = useState<GgufModelRecord[]>([]);
   const [registryModels, setRegistryModels] = useState<ModelSummary[]>([]);
   const [manifest, setManifest] = useState<ModelDownloadManifest | null>(null);
@@ -113,7 +119,7 @@ export function ModelsPage() {
   const modelList = models.data?.models ?? [];
   const assetList = assets.data?.assets ?? [];
   const engineList = available.data?.available_engines ?? [];
-  const runtime = runtimeOverride ?? current.data;
+  const runtime = intent.runtime;
   const inferenceMode = runtime?.inference_mode || 'distributed';
   const runtimeReady = Boolean(runtime?.loaded || runtime?.pipeline_prepared);
   const filteredModels = useMemo(() => {
@@ -332,12 +338,6 @@ export function ModelsPage() {
     }
   };
 
-  useEffect(() => {
-    if (!selectedId && (models.data?.active_model_id || modelList[0]?.model_id)) {
-      setSelectedId(models.data?.active_model_id || modelList[0]?.model_id || '');
-    }
-  }, [modelList, models.data?.active_model_id, selectedId]);
-
   useEffect(() => { void loadRegistry(); }, [loadRegistry]);
 
   useEffect(() => {
@@ -363,93 +363,28 @@ export function ModelsPage() {
   const refresh = useCallback(() => {
     models.refresh();
     available.refresh();
-    current.refresh();
+    intent.refresh();
     assets.refresh();
     void loadGguf();
-  }, [assets.refresh, available.refresh, current.refresh, loadGguf, models.refresh]);
+  }, [assets.refresh, available.refresh, intent.refresh, loadGguf, models.refresh]);
 
   useEffect(() => { void loadGguf(); }, [loadGguf]);
   useRegisterRefresh(refresh);
 
-  const handleInferenceMode = async (mode: 'distributed' | 'local') => {
-    if (busy || mode === inferenceMode) return;
-    setBusy('mode');
-    try {
-      if (!usingFixtures) await api.setInferenceMode(mode);
-      setRuntimeOverride({ loaded: false, pipeline_prepared: false, model_id: null, inference_mode: mode });
-      if (!usingFixtures) {
-        await Promise.all([current.refresh(), role.refresh()]);
-        setRuntimeOverride(null);
-      }
-      pushToast(mode === 'local' ? '已退出集群推理，可选择整模采集本机基线' : '已卸载本地模型并重新加入集群推理', 'ok');
-    } catch (err) {
-      pushToast(`模式切换失败: ${api.describeError(err)}`, 'danger');
-    } finally {
-      setBusy('');
-    }
-  };
+  const handleInferenceMode = (mode: 'distributed' | 'local') => intent.setMode(mode);
 
   const handleLoad = async () => {
-    // ★ 2026-09-19：写操作必须作用在**用户明确选中**的模型上，不能用展示兜底值，
-    //   否则 `selectedId` 失效时会静默加载列表第一项（用户报障的「加载成 1.8B」）。
     if (!explicitSelection) {
       pushToast('请先在列表中选择一个模型', 'danger');
       return;
     }
     if (!explicitSelection.is_available || busy) return;
-    setBusy('load');
-    try {
-      if (usingFixtures) {
-        setRuntimeOverride({
-          loaded: true,
-          model_id: explicitSelection.model_id,
-          model_name: explicitSelection.name,
-          quant_type: effectiveQuant,
-          engine: effectiveEngine,
-          inference_mode: inferenceMode,
-        });
-        pushToast(`Fixture runtime loaded: ${explicitSelection.name}`, 'info');
-      } else {
-        const result = await api.loadModel(effectiveEngine, effectiveQuant, false, explicitSelection.model_id);
-        setRuntimeOverride({
-          ...result,
-          loaded: result.loaded === true,
-          model_id: result.model_id || explicitSelection.model_id,
-          model_name: result.model_name || explicitSelection.name,
-          quant_type: result.quant_type || effectiveQuant,
-          engine: result.engine || effectiveEngine,
-          inference_mode: inferenceMode,
-        });
-        await Promise.all([models.refresh(), available.refresh(), current.refresh()]);
-        setRuntimeOverride(null);
-        pushToast(`${result.pipeline_prepared ? 'Pipeline prepared' : 'Loaded'} ${explicitSelection.name}`, 'ok');
-      }
-    } catch (err) {
-      pushToast(`Load failed: ${api.describeError(err)}`, 'danger');
-    } finally {
-      setBusy('');
-    }
+    await intent.loadLocal(effectiveEngine, effectiveQuant, explicitSelection.model_id);
+    models.refresh();
+    available.refresh();
   };
 
-  const handleUnload = async () => {
-    if (busy || !runtimeReady) return;
-    setBusy('unload');
-    try {
-      if (usingFixtures) {
-        setRuntimeOverride({ ...runtime, loaded: false, pipeline_prepared: false, model_id: null, model_name: '' });
-        pushToast('Fixture runtime unloaded', 'info');
-      } else {
-        const result = await api.unloadModel();
-        setRuntimeOverride({ ...result, loaded: false, pipeline_prepared: false, model_id: null, inference_mode: inferenceMode });
-        await current.refresh();
-        pushToast('Model unloaded', 'ok');
-      }
-    } catch (err) {
-      pushToast(`Unload failed: ${api.describeError(err)}`, 'danger');
-    } finally {
-      setBusy('');
-    }
-  };
+  const handleUnload = () => intent.unload();
 
   const handlePreflight = async (asset: LocalModelAsset) => {
     if (busy) return;
@@ -479,22 +414,6 @@ export function ModelsPage() {
     }
   };
 
-  const handlePreparePipeline = async () => {
-    if (!selectedModel || busy || usingFixtures) {
-      if (usingFixtures) pushToast('Pipeline preparation is disabled in fixture mode', 'info');
-      return;
-    }
-    setBusy('prepare-pipeline');
-    try {
-      const result = await api.prepareModelPipeline(selectedModel.model_id, effectiveQuant || 'fp16');
-      setRuntimeOverride((currentRuntime) => ({ ...(currentRuntime ?? { loaded: false }), ...result, pipeline_prepared: true, model_id: selectedModel.model_id }));
-      await current.refresh();
-      pushToast(`Pipeline prepared for ${selectedModel.name}`, 'ok');
-    } catch (err) {
-      pushToast(`Pipeline preparation failed: ${api.describeError(err)}`, 'danger');
-    } finally { setBusy(''); }
-  };
-
   const handleDownloadGguf = async (file: GgufModelRecord) => {
     if (busy) return;
     setBusy(`download:${file.filename}`);
@@ -517,7 +436,7 @@ export function ModelsPage() {
         <PageHeader
           tag="MODEL LAB"
           title="Model workspace"
-          description="Inspect local model packages, choose a runtime, and keep one explicit loading state."
+          description="已退出集群推理。在本机选择并加载完整模型。"
           actions={
             <>
               <CommandButton variant="ghost" size="sm" icon={RefreshCw} busy={models.refreshing} onClick={refresh}>Refresh</CommandButton>
@@ -544,7 +463,7 @@ export function ModelsPage() {
                   {filteredModels.map((model) => {
                     const state = modelState(model);
                     return (
-                      <li key={model.model_id} data-selected={model.model_id === selectedModel?.model_id ? 'true' : undefined}>
+                      <li key={model.model_id} data-selected={model.model_id === selectedId ? 'true' : undefined}>
                         <button type="button" className="model-list__item" onClick={() => setSelectedId(model.model_id)}>
                           <span className="model-list__name">{model.name}</span>
                           <span className="model-list__meta"><span>{model.model_id}</span><StatusBadge label={state.label} tone={state.tone} size="sm" /></span>
@@ -568,7 +487,7 @@ export function ModelsPage() {
               ) : (
                 <ul className="asset-list">
                   {assetList.map((asset) => (
-                    <li key={asset.model_id} data-selected={asset.model_id === selectedModel?.model_id ? 'true' : undefined}>
+                    <li key={asset.model_id} data-selected={asset.model_id === selectedId ? 'true' : undefined}>
                       <button type="button" className="asset-list__item" onClick={() => setSelectedId(asset.model_id)}>
                         <span><strong>{asset.name || asset.model_id}</strong><small>{asset.runtime_profile || 'manual runtime'}</small></span>
                         <span className="cell-mono">{formatBytes(asset.total_bytes)}</span>
@@ -594,8 +513,8 @@ export function ModelsPage() {
                 <div className="control-group">
                   <span className="control-label">推理模式</span>
                   <div className="control-tabs" role="group" aria-label="推理模式">
-                    <button type="button" className={inferenceMode === 'distributed' ? 'is-active' : ''} disabled={busy !== ''} onClick={() => void handleInferenceMode('distributed')}>集群分布式</button>
-                    <button type="button" className={inferenceMode === 'local' ? 'is-active' : ''} disabled={busy !== ''} onClick={() => void handleInferenceMode('local')}>退出集群，使用本地推理</button>
+                    <button type="button" className={inferenceMode === 'distributed' ? 'is-active' : ''} disabled={intent.busy === 'mode'} onClick={() => void handleInferenceMode('distributed')}>集群分布式</button>
+                    <button type="button" className={inferenceMode === 'local' ? 'is-active' : ''} disabled={intent.busy === 'mode'} onClick={() => void handleInferenceMode('local')}>退出集群，使用本地推理</button>
                   </div>
                   <p className="model-inline-note">{inferenceMode === 'distributed' ? '按分配层段加载。需要整模基线时，请先切换到本地推理。' : '本机不接收集群推理任务。切回分布式时先卸载本地模型。'}</p>
                 </div>
@@ -617,10 +536,10 @@ export function ModelsPage() {
                   </div>
                 </div>
               </div>
+              {intent.actionError ? <p className="model-inline-error" role="alert">{intent.actionError}</p> : null}
               <div className="runtime-actions">
-                <CommandButton icon={Gauge} busy={busy === 'load'} disabled={!selectedModel?.is_available || busy !== ''} onClick={() => void handleLoad()}>Load selected</CommandButton>
+                <CommandButton icon={Gauge} busy={busy === 'load'} disabled={!explicitSelection?.is_available || busy !== ''} onClick={() => void handleLoad()}>Load selected</CommandButton>
                 <CommandButton variant="ghost" icon={Download} href={routeHref('downloads')}>Download models</CommandButton>
-                <CommandButton variant="ghost" icon={Database} busy={busy === 'prepare-pipeline'} disabled={inferenceMode !== 'distributed' || !selectedModel || busy !== ''} onClick={() => void handlePreparePipeline()}>Prepare pipeline</CommandButton>
                 <CommandButton variant="danger" icon={Unplug} busy={busy === 'unload'} disabled={!runtimeReady || busy !== ''} onClick={() => void handleUnload()}>Unload runtime</CommandButton>
               </div>
               {!selectedModel?.is_available && selectedModel ? <p className="model-inline-note"><CircleAlert size={14} />{selectedModel.unavailable_reason || 'This model has no loadable local format.'}</p> : null}
